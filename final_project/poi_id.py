@@ -3,11 +3,14 @@
 import sys
 import pickle
 from copy import deepcopy
+import numpy as np
 
-from sklearn.metrics import f1_score, confusion_matrix, classification_report
+from sklearn.metrics import f1_score, confusion_matrix, classification_report, precision_score, recall_score
 from sklearn.grid_search import GridSearchCV
 from sklearn.metrics import make_scorer
-from sklearn.cross_validation import train_test_split
+from sklearn.cross_validation import train_test_split, StratifiedKFold
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.preprocessing import StandardScaler
 
 sys.path.append("../tools/")
 
@@ -60,13 +63,34 @@ my_data = deepcopy(data_dict)
 # create binary features that keep track if a value was missing or not
 binary_features = create_binary_missing_features(my_data, features_list)
 binary_features = list(binary_features)
-features_list += binary_features
 
 # create a feature that shows how much interaction did the person have
 # with poi.
 create_email_features(my_data, features_list)
 
-features_list = [target_label] + features_list
+# initialize the selected feature list obtained during model tuning
+selected_features = ['to_messages',
+                     'from_messages',
+                     'from_this_person_to_poi',
+                     'from_poi_to_this_person',
+                     'shared_receipt_with_poi',
+                     'salary',
+                     'deferral_payments', 
+                     'total_payments', 
+                     'exercised_stock_options',
+                     'bonus', 
+                     'restricted_stock', 
+                     'total_stock_value', 
+                     'expenses',
+                     'other', 
+                     'deferred_income', 
+                     'long_term_incentive', 
+                     'missing_bonus',
+                     'missing_exercised_stock_options', 
+                     'missing_to_messages',
+                     'interaction_with_poi']
+
+features_list = [target_label] + selected_features
 
 ### Store to my_dataset for easy export below.
 my_dataset = my_data
@@ -75,95 +99,57 @@ my_dataset = my_data
 data = featureFormat(my_dataset, features_list, sort_keys = True)
 labels, features = targetFeatureSplit(data)
 
-### Task 4: Try a varity of classifiers
+### Task 4 & Task 5
+### Model selection and parameter tuning are done separately
+### in the notebook `Model Selection.ipynb`. Hence, here 
+### training the model on best parameters obtained during
+### parameter tuning. However, to illustrate the cross-validation
+### performance and the performance on the final test data,
+### 10-fold Stratified Cross Validation will be used.
 ### Please name your classifier clf for easy export below.
-### Note that if you want to do PCA or other multi-stage operations,
-### you'll need to use Pipelines. For more info:
-### http://scikit-learn.org/stable/modules/pipeline.html
-
-# prepare training and test set
-X_train, X_test, y_train, y_test = train_test_split(features, labels, 
-	test_size=0.2, stratify=labels, random_state=42)
-
-# train a decision tree classifier
-from sklearn.tree import DecisionTreeClassifier
-
-dt_clf = DecisionTreeClassifier(random_state=2016)
-
-criteria = ['gini', 'entropy']
-max_depth = [1, 3, 5, 7]
-max_features = [5, 6, 10, 20, 39]
-min_samples_leaf = [1, 3, 5]
-class_weight = ['balanced']
-
-param_grid = {'criterion': criteria,
-              'max_depth': max_depth,
-              'max_features': max_features,
-              'min_samples_leaf': min_samples_leaf,
-              'class_weight': class_weight}
-
-estimator_dt = GridSearchCV(dt_clf, param_grid, cv=5)
-
-estimator_dt.fit(X_train, y_train)
-
-dt_predictions = estimator_dt.predict(X_test)
-
-print "Decision Tree Classification Report:\n"
-print classification_report(y_test, dt_predictions)
-
-# Random Forest Classifier
-from sklearn.ensemble import RandomForestClassifier
-
-rf_model= RandomForestClassifier(class_weight='balanced', random_state=999)
-
-num_estimators = [5, 10, 20, 50]
-leaf_size = [1, 3, 5]
-max_features = [5, 6, 10, 20]
-param_grid = {'n_estimators': num_estimators,
-              'max_features': max_features,
-              'min_samples_leaf':leaf_size}
-
-rf_estimator = GridSearchCV(rf_model, param_grid, scoring="f1_macro", cv=10)
-
-rf_estimator.fit(X_train, y_train)
-
-print "Random Forest Classification Report:\n"
-print classification_report(y_test, rf_estimator.predict(X_test))
 
 # Logistic Regression Model
 from sklearn.linear_model import LogisticRegression
 
-clf_lr = LogisticRegression(random_state=42, class_weight='balanced')
+labels, features = np.array(labels), np.array(features)
 
-C = [10**num for num in range(-6, 6)]
-param_grid = {'C':C, 'penalty':['l1', 'l2']}
+# prepare train and test data
+features_train, features_test, labels_train, labels_test = train_test_split(features, 
+                                                                            labels,
+                                                                            test_size=0.2,
+                                                                            stratify=labels, 
+                                                                            random_state=42)
 
-estimator_lr = GridSearchCV(clf_lr, param_grid, cv=10, scoring='f1_macro')
+clf = make_pipeline(StandardScaler(),
+	                LogisticRegression(penalty='l1', C=10, class_weight='balanced', random_state=42))
 
-estimator_lr.fit(X_train, y_train)
+folds = StratifiedKFold(labels_train, n_folds=10, shuffle=True, random_state=42)
 
-print "Logistic Regression Classification Report:\n"
-print classification_report(y_test, estimator_lr.predict(X_test))
-print
-print estimator_lr.best_params_
+precision = []
+recall = []
 
-print "\nFeatures Not used in model:\n"
-for feature, coef in zip(features_list[1:], estimator_lr.best_estimator_.coef_[0]):
-    if coef == 0.0:
-        print feature
-### Task 5: Tune your classifier to achieve better than .3 precision and recall 
-### using our testing script. Check the tester.py script in the final project
-### folder for details on the evaluation method, especially the test_classifier
-### function. Because of the small size of the dataset, the script uses
-### stratified shuffle split cross validation. For more info: 
-### http://scikit-learn.org/stable/modules/generated/sklearn.cross_validation.StratifiedShuffleSplit.html
+for train_idx, test_idx in folds:
+    
+    train_X = features_train[train_idx]
+    train_y = labels_train[train_idx]
+    test_X = features_train[test_idx]
+    test_y = labels_train[test_idx]
 
-# classifiers already tuned in the earlier task. So, only training with the full data and best params. The 
-# whole process of tuning and selecting written up in `Model Selection.ipynb` notebook.
-# train logistic regression classifier here with full training set and the best parameters obtained earlier
-# when cross-validated and tuned.
-clf = estimator_lr.best_estimator_
-clf.fit(X_train, y_train)
+    clf.fit(train_X, train_y)
+    pred = clf.predict(test_X)
+    
+    precision.append(precision_score(test_y, pred))
+    recall.append(recall_score(test_y, pred))\
+
+print "Cross-Validated Average Precision:", round(np.mean(precision), 2)
+print "Cross-Validated Average Recall:", round(np.mean(recall), 2), "\n"
+
+# fit the model on whole of training data
+clf.fit(features_train, labels_train)
+
+# print classification report for the test data
+print classification_report(labels_test, clf.predict(features_test))
+
 
 ### Task 6: Dump your classifier, dataset, and features_list so anyone can
 ### check your results. You do not need to change anything below, but make sure
